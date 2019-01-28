@@ -1,0 +1,693 @@
+---
+AWSTemplateFormatVersion: 2010-09-09
+Description: Jenksin and Sonar Servers on Ec2 instance With Docker
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: Sonar server
+        Parameters: [Ec2ServerInstanceType]
+      - Label:
+          default: Networking
+        Parameters:
+          - VPC
+          - InternalSubnets
+          - CidrBlock
+          - SSLCertificateName
+      - Label:
+          default: EC2 Configuration
+        Parameters:
+          - Ec2ServerInstanceType
+          - HomeSize
+          - KeyName
+      - Label:
+          default: Extra Configuration
+        Parameters:
+          - TeamName
+      - Label:
+          default: Optional Configuration
+        Parameters:
+          - BackupArtifactName
+          - RestoreBackupBucketName
+          - RunSonar
+      - Label:
+          default: Database
+        Parameters:
+          - DBPassword
+          
+    ParameterLabels:
+      CidrBlock:
+        default: Permitted IP range
+      DBPassword:
+        default: Sonar database password
+      Ec2ServerInstanceType:
+        default: Sonar server instance type
+      HomeSize:
+        default: Home directory size
+      KeyName:
+        default: Key Name
+      InternalSubnets:
+        default: Application Subnets
+      VPC:
+        default: VPC
+      TeamName:
+        default: Name of the team
+      RestoreBackupBucketName:
+        default: Bucket restore from. Juist the name of the bucket
+      BackupArtifactName:
+        default: Name of the object in the bucket. This is the actual zip of jenkins directory
+      RunSonar:
+        default: Create and run Sonar Configuration
+      SSLCertificateName:
+        default: SSL Certificate Name
+Parameters:
+  CidrBlock:
+    Description: The CIDR IP range that is permitted to access the Sonar URL. Use 0.0.0.0/0 if you want public access from the internet.
+    Type: String
+    MinLength: 9
+    MaxLength: 18
+    AllowedPattern: "(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})/(\\d{1,2})"
+    ConstraintDescription: Must be a valid IP CIDR range of the form x.x.x.x/x.
+  DBPassword:
+    Description: Password for the Sonar user ('atlSonar') account. Max length of 128 characters. Not used if you have specified a Database snapshot ID.
+    Type: String
+    MaxLength: 128
+    AllowedPattern: "[a-zA-Z0-9]*"
+    ConstraintDescription: If specified, must contain 8 to 128 alphanumeric characters
+    NoEcho: true
+  RunSonar:
+    Type: String
+    Default: false
+    AllowedValues: [true, false]
+    ConstraintDescription: Must be 'true' or 'false'.
+  TeamName:
+    Description: Name of the team
+    Type: String
+    Default: teamname
+    MaxLength: 128
+    AllowedPattern: "[a-z0-9-]*"
+    ConstraintDescription: Team name must be only alphanumeric with "-"
+  RestoreBackupBucketName:
+    Description: Bucket to restore from. Must be in the form of <bucket-name>
+    Type: String
+    Default: wex-teamname-jenkins-backup
+    MaxLength: 256
+    AllowedPattern: ".*"
+    ConstraintDescription: Must be exactly a bucket name and object or nothing
+  BackupArtifactName:
+    Description: Actual object to restore from. Must be the exact name of the zip artifact
+    Type: String
+    Default: jenkins-backup-2018-06-14-194958.tar.gz
+    MaxLength: 256
+    AllowedPattern: ".*"
+    ConstraintDescription: Must be exactly a bucket name and object or nothing
+  Ec2ServerInstanceType:
+    Description: "Instance type for the file server hosting the Sonar shared home directory. See https://confluence.atlassian.com/x/GpdKLg for guidance"
+    Type: String
+    Default: t2.small
+    AllowedValues:
+      - t2.small
+      - t2.medium
+      - t2.large
+      - t2.xlarge
+    ConstraintDescription: Must be an EC2 instance type in the t2 family.
+  HomeSize:
+    Description: Home directory storage size, in gibibytes (GiB) (8 - 16384)
+    Type: Number
+    Default: 20
+    MinValue: 8
+    MaxValue: 16384
+    ConstraintDescription: Must be in the range 8 - 16384.
+  KeyName:
+    Description: The EC2 Key Pair to allow SSH access to the instances
+    Type: "AWS::EC2::KeyPair::KeyName"
+    ConstraintDescription: Must be the name of an existing EC2 Key Pair.
+  InternalSubnets:
+    Description: Subnets (two or more) where your Sonar Server and other internal infrastructure will be deployed. MUST be within the selected VPC.
+    Type: List<AWS::EC2::Subnet::Id>
+    ConstraintDescription: Must be a list of two or more Subnet ID's within the selected VPC.
+  VPC:
+    Description: Virtual Private Cloud
+    Type: "AWS::EC2::VPC::Id"
+    ConstraintDescription: Must be the ID of a VPC.
+  SSLCertificateName:
+    Description: The name of your Server Certificate to use for HTTPS. Refer to Amazon documentation for managing your server certificates. Leave blank if you don't want to set up HTTPS at this time
+    Type: String
+    MinLength: 0
+    MaxLength: 100
+    Default: ""
+Mappings:
+  AWSInstanceType2Arch:
+    t2.small:
+      Arch: HVM64
+    t2.medium:
+      Arch: HVM64
+    t2.large:
+      Arch: HVM64
+    t2.xlarge:
+      Arch: HVM64
+  AWSRegionArch2AMI:
+    eu-central-1:
+      HVM64: ami-9a91b371
+      HVMG2: NOT_SUPPORTED
+    us-east-1:
+      HVM64: ami-14c5486b
+      HVMG2: NOT_SUPPORTED
+    us-east-2:
+      HVM64: ami-922914f7
+      HVMG2: NOT_SUPPORTED
+Conditions: 
+  RunSonar: !Equals [!Ref RunSonar, true]
+  SetupSSL:
+    !Not [!Equals [!Ref SSLCertificateName, ""]]
+Resources:
+  EC2Server:
+    Type: "AWS::EC2::Instance"
+    Metadata:
+      AWS::CloudFormation::Init:
+        configSets:
+          do_install:
+            - install_nginx
+            - install_docker
+            - add_s3_scripts
+        install_nginx:
+          files:
+            /etc/nginx/nginx.conf:
+              content: !Sub |
+                worker_processes 1;
+                events { worker_connections 1024; }
+                http {
+                    server {
+                        listen 80;
+                        location / {
+                            if ($http_x_forwarded_proto != 'https') {
+                              rewrite ^(.*)$ https://$host$1 permanent;
+                            }
+                            proxy_pass         http://127.0.0.1:8080;
+                            proxy_redirect     off;
+                            proxy_set_header   Host $host;
+                            proxy_set_header   X-Real-IP $remote_addr;
+                            proxy_set_header   X-Forwarded-For $proxy_add_x_forwarded_for;
+                            proxy_set_header   X-Forwarded-Host $server_name;
+                        }
+                    }
+
+                    server {
+                        listen 90;
+                        location / {
+                            if ($http_x_forwarded_proto != 'https') {
+                              rewrite ^(.*)$ https://$host$1 permanent;
+                            }
+                            proxy_pass         http://127.0.0.1:9000;
+                            proxy_redirect     off;
+                            proxy_set_header   Host $host;
+                            proxy_set_header   X-Real-IP $remote_addr;
+                            proxy_set_header   X-Forwarded-For $proxy_add_x_forwarded_for;
+                            proxy_set_header   X-Forwarded-Host $server_name;
+                        }
+                    }
+                }
+              group: root
+              owner: root
+              mode: '644'
+          packages:
+            yum:
+              nginx: []
+          services:
+            sysvinit:
+              nginx:
+                enabled: true
+                ensureRunning: true
+        install_docker:
+          packages:
+            yum:
+              docker: []
+          services:
+            sysvinit:
+              docker:
+                enabled: true
+                ensureRunning: true
+        add_s3_scripts:
+          files:
+            /scripts/initial_jenkins_restore.sh:
+              content: !Sub |
+                #!/usr/bin/env bash
+
+                JENKINS_CONFIG_ARCHIVE=`aws s3 ls ${RestoreBackupBucketName}/${BackupArtifactName} | sort | tail -n 1 | awk '{print $4}'`
+                echo $JENKINS_CONFIG_ARCHIVE
+                if [ -n $JENKINS_CONFIG_ARCHIVE ]; then
+                    echo "Running as user:"
+                    whoami
+                    aws s3 cp s3://${RestoreBackupBucketName}/${BackupArtifactName} .
+                    echo "Archive found, restoring..."
+                    tar -xvf $JENKINS_CONFIG_ARCHIVE
+                    rm -rf /home/jenkins/.jenkins
+                    mkdir -p /home/jenkins/.jenkins
+                    mv var/lib/jenkins/* /home/jenkins/.jenkins
+                    chown -Rf jenkins:jenkins /home/jenkins/.jenkins
+                    rm -f $JENKINS_CONFIG_ARCHIVE
+                    rm -rf var
+                    sed -i -e 's/<jenkinsUrl>.*<\/jenkinsUrl>/<jenkinsUrl>https:\/\/${TeamName}.jenkins.wexapps.com<\/jenkinsUrl>/g' /home/jenkins/.jenkins/jenkins.model.JenkinsLocationConfiguration.xml
+                else
+                    echo "No backups found on s3, skipping..."
+                fi
+              group: root
+              owner: root
+              mode: '755'
+
+            /scripts/jenkins_restore.sh:
+              content: !Sub |
+                #!/usr/bin/env bash
+
+                JENKINS_CONFIG_ARCHIVE=`aws s3 ls wex-${TeamName}-jenkins-backup | sort | tail -n 1 | awk '{print $4}'`
+                echo $JENKINS_CONFIG_ARCHIVE
+                aws s3 cp s3://${TeamName}-jenkins-backup/$JENKINS_CONFIG_ARCHIVE .
+                if [ -n $JENKINS_CONFIG_ARCHIVE ]; then
+                    echo "Archive found, restoring..."
+                    tar -xvf $JENKINS_CONFIG_ARCHIVE
+                    rm -rf /home/jenkins/.jenkins
+                    mkdir -p /home/jenkins/.jenkins
+                    mv home/jenkins/.jenkins/* /home/jenkins/.jenkins
+                    chown -Rf jenkins:jenkins /home/jenkins/.jenkins
+                    rm -f $JENKINS_CONFIG_ARCHIVE
+                    rm -rf home
+                    sed -i -e 's/<jenkinsUrl>.*<\/jenkinsUrl>/<jenkinsUrl>https:\/\/${TeamName}.jenkins.wexapps.com<\/jenkinsUrl>/g' /home/jenkins/.jenkins/jenkins.model.JenkinsLocationConfiguration.xml
+                    docker stop jenkins
+                    docker start jenkins
+                else
+                    echo "No backups found on s3, skipping..."
+                fi
+              group: root
+              owner: root
+              mode: '755'
+
+            /scripts/jenkins_backup.sh:
+              content: !Sub |
+                #!/usr/bin/env bash
+
+                # Generate timestamped filename
+                TIMESTAMPED_TAG=`date +%Y-%m-%d-%H%M%S`
+                BACKUP_ARCHIVE="./jenkins-backup-${TeamName}.tar.gz"
+
+                # Inconceivable race condition avoidance
+                if [ -f $BACKUP_ARCHIVE ]; then
+                  rm $BACKUP_ARCHIVE
+                fi
+
+                # Archive everything on jenkins but workspace, .file, .folders and m2 files, whatever these are
+                # If the jenkins folder changes half way through, tar will fail; retry up to 5 times
+                COUNTER=0
+                until [ $COUNTER -ge 5 ]
+                do
+                    tar -czvf $BACKUP_ARCHIVE --exclude=".m2" /home/jenkins/.jenkins && break
+                    
+                    # If we get here, tar failed!
+                    echo "Archive creation failed, retrying..."
+                    COUNTER=$[$COUNTER+1]
+                    sleep 15
+                done
+
+                # Place on s3 and cleanup
+                aws s3 cp $BACKUP_ARCHIVE s3://wex-${TeamName}-jenkins-backup/
+                rm $BACKUP_ARCHIVE
+              group: root
+              owner: root
+              mode: '755'
+
+            /scripts/postgres_backup.sh:
+              content: !Sub |
+                #!/usr/bin/env bash
+
+                BACKUP_ARCHIVE="./postgres-sonar-backup-${TeamName}"
+
+                docker exec -it postgres pg_dump -U postgres > $BACKUP_ARCHIVE
+
+                aws s3 cp $BACKUP_ARCHIVE s3://wex-${TeamName}-jenkins-backup/
+                rm $BACKUP_ARCHIVE
+              group: root
+              owner: root
+              mode: '755'
+
+            /etc/cron.d/backup_jenkins:
+              content: !Sub |
+                SHELL=/bin/bash
+                PATH=/sbin:/bin:/usr/sbin:/usr/bin
+                HOME=/home/jenkins/
+                01 01 * * * jenkins /scripts/jenkins_backup.sh
+              group: root
+              owner: root
+              mode: '644'
+
+            /etc/cron.d/backup_postgres:
+              content: !Sub |
+                SHELL=/bin/bash
+                PATH=/sbin:/bin:/usr/sbin:/usr/bin
+                HOME=/home/jenkins/
+                01 01 * * * jenkins /scripts/postgres_backup.sh
+              group: root
+              owner: root
+              mode: '644'
+
+    Properties:
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            VolumeType: gp2
+            DeleteOnTermination: true
+            VolumeSize: !Ref HomeSize
+      ImageId:
+        !FindInMap
+          - AWSRegionArch2AMI
+          - !Ref "AWS::Region"
+          - !FindInMap
+              - AWSInstanceType2Arch
+              - !Ref Ec2ServerInstanceType
+              - Arch
+      InstanceType: !Ref Ec2ServerInstanceType
+      IamInstanceProfile: !Ref BackupS3BucketInstanceProfile
+      KeyName: !Ref KeyName
+      NetworkInterfaces:
+        - GroupSet: [!Ref EC2SecurityGroup]
+          AssociatePublicIpAddress: false
+          DeviceIndex: 0
+          DeleteOnTermination: true
+          SubnetId: !Select [0, !Ref InternalSubnets]
+      Tags:
+        - Key: Name
+          Value: !Join ["-", [!Ref TeamName, "Jenkins-Sonar"]]
+        - Key: Application
+          Value:
+            !Ref "AWS::StackId"
+        - Key: EC2ON
+          Value: on=(M-U,8);tz=est
+        - Key: EC2OFF
+          Value: off=(M-U,0);tz=est
+        - Key: Compliance
+          Value: none
+        - Key: DataClass
+          Value: Internal
+        - Key: Email
+          Value: jered.philippon@wexinc.com
+        - Key: Owner
+          Value: jphilippon
+        - Key: LOB
+          Value: Enterprise Architecture
+        - Key: Project
+          Value: BAU
+        - Key: Environment
+          Value: dev
+      UserData:
+        Fn::Base64: 
+          Fn::Sub:
+            - |
+              #!/bin/bash -xe
+              yum update -y aws-cfn-bootstrap
+              /opt/aws/bin/cfn-init -v --stack ${AWS::StackId} --resource EC2Server --configsets do_install --region ${AWS::Region}
+              
+              useradd -u 1000 jenkins
+              usermod -aG docker ec2-user
+              usermod -aG docker jenkins
+
+              sudo su - jenkins <<'EOF'
+                              
+                if ${RunSonar}; then
+                  mkdir /home/jenkins/pgdata
+                  docker pull postgres
+                  docker run -d --name postgres \
+                  -p 5432:5432 \
+                  -e POSTGRES_PASSWORD=${DBPassword} \
+                  --user 1000:1000 \
+                  -v /home/jenkins/pgdata:/var/lib/postgresql/data \
+                  --restart always \
+                  postgres
+
+                  docker pull sonarqube
+                  docker run -d --name sonarqube \
+                  -p 9000:9000 -p 9092:9092 \
+                  -e SONARQUBE_JDBC_USERNAME=postgres \
+                  -e SONARQUBE_JDBC_PASSWORD=${DBPassword} \
+                  -e SONARQUBE_JDBC_URL=jdbc:postgresql://localhost:5432/postgres \
+                  --restart always \
+                  --net="host" \
+                  sonarqube
+                fi
+
+                echo "Running as user:"
+                whoami
+
+                mkdir /home/jenkins/.jenkins
+                cd /home/jenkins
+                /scripts/initial_jenkins_restore.sh
+
+                docker pull jenkinsci/blueocean
+                docker run -d --name jenkins \
+                -p 8080:8080 \
+                -v /home/jenkins/.jenkins:/var/jenkins_home \
+                --restart always \
+                jenkinsci/blueocean
+              EOF
+            - { Endpoint: !If ["RunSonar", "This variable is not used", ""] }
+
+  JenkinsLoadBalancer: #change to new LB
+    Type: "AWS::ElasticLoadBalancingV2::LoadBalancer"
+    Properties:
+      Name: !Join ['-', [!Ref TeamName, 'Jenkins-LB']]
+      Scheme: "internal"
+      SecurityGroups: [!Ref JenkinsLoadBalancerSecurityGroup]
+      Subnets: !Ref InternalSubnets
+      Tags:
+        - Key: Name
+          Value: Ec2ServerLB
+  JenkinsLoadBalancerSecurityGroup:
+    Type: "AWS::EC2::SecurityGroup"
+    Properties:
+      GroupDescription: Security group allowing HTTP/HTTPS access for LoadBalancer
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: !Ref CidrBlock
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: !Ref CidrBlock
+  JenkinsLBListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref JenkinsLBTargetGroup
+      LoadBalancerArn:
+        Ref: JenkinsLoadBalancer
+      Port: 80
+      Protocol: HTTP
+  JenkinsLBSecureListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Condition: SetupSSL
+    Properties:
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref JenkinsLBTargetGroup
+      LoadBalancerArn:
+        Ref: JenkinsLoadBalancer
+      Port: 443
+      Protocol: HTTPS
+      Certificates: 
+        - CertificateArn: !Sub 'arn:aws:acm:${AWS::Region}:${AWS::AccountId}:certificate/${SSLCertificateName}'
+
+#------------------------JENKINS-------------------------------
+  JenkinsLBTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      HealthCheckIntervalSeconds: 30
+      HealthCheckProtocol: HTTP
+      HealthCheckTimeoutSeconds: 10
+      HealthyThresholdCount: 2
+      HealthCheckPath: /login
+      Matcher:
+        HttpCode: '200'
+      Name: !Join ["-", [!Ref TeamName, "JENKINS-TG"]]
+      Port: 80
+      Protocol: HTTP
+      Targets:
+      - Id: !Ref EC2Server
+        Port: 80
+      UnhealthyThresholdCount: 3
+      VpcId: !Ref VPC
+      Tags:
+      - Key: Name
+        Value: !Join ["-", [!Ref TeamName, "JENKINS-TG"]]
+  
+  JenkinsListenerPort80Rule:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Properties:
+      Actions:
+      - Type: forward
+        TargetGroupArn: !Ref JenkinsLBTargetGroup
+      Conditions:
+      - Field: host-header
+        Values:
+        - !Join [".", [!Ref TeamName, "jenkins.wexapps.com"]]
+      ListenerArn: !Ref JenkinsLBListener
+      Priority: 1
+
+  JenkinsListenerPort443Rule:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Properties:
+      Actions:
+      - Type: forward
+        TargetGroupArn: !Ref JenkinsLBTargetGroup
+      Conditions:
+      - Field: host-header
+        Values:
+        - !Join [".", [!Ref TeamName, "jenkins.wexapps.com"]]
+      ListenerArn: !Ref JenkinsLBSecureListener
+      Priority: 1
+
+  JenkinsRoute53RecordSet:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      Name: !Join [".", [!Ref TeamName, "jenkins.wexapps.com"]]
+      Comment: DNS name for the new jenkins instance
+      HostedZoneId: Z2YBJK01WYA7K
+      Type: CNAME
+      TTL: 300
+      ResourceRecords:
+        - !GetAtt JenkinsLoadBalancer.DNSName
+#-----------------------SONAR------------------------------
+  SonarLBTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Condition: RunSonar
+    Properties:
+      HealthCheckIntervalSeconds: 30
+      HealthCheckProtocol: HTTP
+      HealthCheckTimeoutSeconds: 10
+      HealthyThresholdCount: 2
+      HealthCheckPath: /login
+      Matcher:
+        HttpCode: '200'
+      Name: !Join ["-", [!Ref TeamName, "SONAR-TG"]]
+      Port: 80
+      Protocol: HTTP
+      Targets:
+      - Id: !Ref EC2Server
+        Port: 90
+      UnhealthyThresholdCount: 3
+      VpcId: !Ref VPC
+      Tags:
+      - Key: Name
+        Value: !Join ["-", [!Ref TeamName, "SONAR-TG"]]
+  
+  SonarListenerPort80Rule:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Condition: RunSonar
+    Properties:
+      Actions:
+      - Type: forward
+        TargetGroupArn: !Ref SonarLBTargetGroup
+      Conditions:
+      - Field: host-header
+        Values:
+        - !Join [".", [!Ref TeamName, "sonar.wexapps.com"]]
+      ListenerArn: !Ref JenkinsLBListener
+      Priority: 2
+    DependsOn: JenkinsListenerPort80Rule
+
+  SonarListenerPort443Rule:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Condition: RunSonar
+    Properties:
+      Actions:
+      - Type: forward
+        TargetGroupArn: !Ref SonarLBTargetGroup
+      Conditions:
+      - Field: host-header
+        Values:
+        - !Join [".", [!Ref TeamName, "sonar.wexapps.com"]]
+      ListenerArn: !Ref JenkinsLBSecureListener
+      Priority: 2
+    DependsOn: JenkinsListenerPort443Rule
+
+  SonarRoute53RecordSet:
+    Type: AWS::Route53::RecordSet
+    Condition: RunSonar
+    Properties:
+      Name: !Join [".", [!Ref TeamName, "sonar.wexapps.com"]]
+      Comment: DNS name for the new sonar instance
+      HostedZoneId: Z2YBJK01WYA7K
+      Type: CNAME
+      TTL: 300
+      ResourceRecords:
+        - !GetAtt JenkinsLoadBalancer.DNSName
+#--------------------SECURITY GROUPS--------------------------
+
+  EC2SecurityGroup:
+    Type: "AWS::EC2::SecurityGroup"
+    Properties:
+      GroupName: !Join ["-", [!Ref TeamName, "JENKINS"]]
+      GroupDescription: Security group allowing SSH and HTTP access for EC2 instance
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: !Ref CidrBlock
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 82
+          CidrIp: !Ref CidrBlock
+        - IpProtocol: tcp
+          FromPort: 90
+          ToPort: 90
+          CidrIp: !Ref CidrBlock
+        - IpProtocol: tcp
+          FromPort: 9092
+          ToPort: 9092
+          CidrIp: !Ref CidrBlock
+      Tags:
+        - Key: Name
+          Value: !Join ["-", [!Ref TeamName, "JENKINS"]]
+
+#--------------------JENKINS S3 BACKUP--------------------------
+  RecordServiceS3Bucket:
+    Type: "AWS::S3::Bucket"
+    DeletionPolicy: Retain
+    Properties:
+      BucketName: !Join ["-", ["wex", !Ref TeamName, "jenkins-backup"]]
+      VersioningConfiguration:
+        Status: Enabled  
+
+  BackupS3BucketInstanceProfile:
+    Type: "AWS::IAM::InstanceProfile"
+    Properties:
+      Path: "/"
+      Roles: [ !Ref AccessS3BucketsRole ]
+      InstanceProfileName: !Join ["-", [!Ref TeamName, "JenkinsProfile"]]
+
+  AccessS3BucketsPolicy:
+    Type: "AWS::IAM::Policy"
+    Properties:
+      PolicyName: !Join ["-", [!Ref TeamName, "JenkinsBucketPolicy"]]
+      PolicyDocument: 
+        Statement:
+          - Effect: "Allow"
+            Action: ["s3:GetObject","s3:PutObject","s3:DeleteObject","s3:ListBucket"]
+            Resource: !Join ["", [!GetAtt [RecordServiceS3Bucket, Arn], "*"]]
+          - Effect: "Allow"
+            Action: ["s3:GetObject","s3:ListBucket"]
+            Resource: !Join ["", ["arn:aws:s3:::", !Ref RestoreBackupBucketName, "*"]]
+      Roles: [ !Ref AccessS3BucketsRole ]
+
+  AccessS3BucketsRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      AssumeRolePolicyDocument: 
+        Version: "2012-10-17"
+        Statement: 
+          - Effect: "Allow"
+            Principal:
+              Service : ["ec2.amazonaws.com"]
+            Action : ["sts:AssumeRole"]     
+      Path: "/"
+      RoleName: !Join ["-", [!Ref TeamName, "JenkinsRole"]]

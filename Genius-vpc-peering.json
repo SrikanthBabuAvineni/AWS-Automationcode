@@ -1,0 +1,448 @@
+{
+    "AWSTemplateFormatVersion": "2010-09-09",
+    "Description": "WEX Inc., AWS CloudFormation Template Configure the VPC peering between CoreServices Prod and CoreTools Prod VPC's by default.",
+    "Metadata": {
+        "AWS::CloudFormation::Interface": {
+            "ParameterGroups": [
+                {
+                    "Label": {
+                        "default": "Create VPC Peering"
+                    },
+                    "Parameters": [
+                        "CreateVpcPeering",
+                        "NumberOfVpcPeering",
+                        "peerRoleName"
+                    ]
+                },
+                {
+                    "Label": {
+                        "default": "VPC Peering Connection 1"
+                    },
+                    "Parameters": [
+                        "PeerVpcName1",
+                        "PeerVpcId1",
+                        "VpcPeerConnection1AccountId"
+                    ]
+                },
+                {
+                    "Label": {
+                        "default": "VPC Peering Connection 2"
+                    },
+                    "Parameters": [
+                        "PeerVpcName2",
+                        "PeerVpcId2",
+                        "VpcPeerConnection2AccountId"
+                    ]
+                },
+                {
+                    "Label": {
+                        "default": "Choose VPC"
+                    },
+                    "Parameters": [
+                        "ExportVPCId",
+                        "VPCName",
+                        "VPCid"
+                    ]
+                },
+                {
+                    "Label": {
+                        "default": "Create Routes"
+                    },
+                    "Parameters": [
+                        "ConfigureRoutes",
+                        "Route1",
+                        "Route2"
+                    ]
+                }
+            ]
+        }
+    },
+    "Parameters": {
+        "CreateVpcPeering": {
+            "Description": "Choose YES if you want to create the VPC peering for new VPC.",
+            "Default": "YES",
+            "Type": "String",
+            "AllowedValues": [
+                "YES",
+                "NO"
+            ],
+            "ConstraintDescription": "Must specify YES or NO."
+        },
+        "NumberOfVpcPeering": {
+            "Description": "Choose number of VPC peering connections to create for new VPC.",
+            "Default": "2",
+            "Type": "String",
+            "AllowedValues": [
+                "1",
+                "2"
+            ],
+            "ConstraintDescription": "Must specify 1 or 2."
+        },
+        "PeerVpcName1": {
+            "Description": "Give the VPC name, by default Core Services Vpc name (required).",
+            "Type": "String",
+            "Default": "CoreServicesProdVPC"
+        },
+        "PeerVpcId1": {
+            "Description": "Give the peer vpc id, by default Core Services.",
+            "Type": "String",
+            "Default": "vpc-8907e1f0",
+            "ConstraintDescription": "Enter valid VPC id."
+        },
+        "PeerVpcName2": {
+            "Description": "Give the VPC name, by default Core Tools Vpc name (required).",
+            "Type": "String",
+            "Default": "CoreToolsProdVPC"
+        },
+        "PeerVpcId2": {
+            "Description": "Give the peer vpc id, by default Core Tools.(You can use this parameter if you choose '2' on number of VPC peering section).",
+            "Type": "String",
+            "Default": "vpc-ab0071d3",
+            "ConstraintDescription": "Enter valid VPC id."
+        },
+        "VpcPeerConnection1AccountId": {
+            "Description": "Enter AccountId for VPC peer connection 1.",
+            "Type": "String",
+            "Default": "189106039250"
+        },
+        "VpcPeerConnection2AccountId": {
+            "Description": "Enter AccountId for VPC peer connection 2.",
+            "Type": "String",
+            "Default": "189106039250"
+        },
+        "peerRoleName": {
+            "Description": "Give the name of the role on accepter VPC account. (use only same role name if you have multiple accounts).",
+            "Type": "String",
+            "Default": "Wex-Vpc-Peering-Accept-Access"
+        },
+        "ExportVPCId": {
+            "Description": "Specify YES. Only if you have export values of VPC Id withname {VPCname}-VpcId (i.e., If you used default WEX Inc., 3AZ VPC template).",
+            "Default": "YES",
+            "Type": "String",
+            "AllowedValues": [
+                "YES",
+                "NO"
+            ],
+            "ConstraintDescription": "Must specify YES or NO."
+        },
+        "VPCName": {
+            "Description": "Give the Name of VPC related to VPC-Id(required).",
+            "Type": "String",
+            "AllowedPattern": ".+",
+            "ConstraintDescription": "Give the name of VPC"
+        },
+        "VPCid": {
+            "Description": "Enter VPC-Id, if you don't have export VPC id with export name {VPCname}-VpcId",
+            "Type": "String"
+        },
+        "ConfigureRoutes": {
+            "Description": "Specify YES. Only if you have export values of route id's withname {VPCname}-PrivateRoute{1|2|3} (i.e., If you used default WEX Inc., 3AZ VPC template).",
+            "Default": "YES",
+            "Type": "String",
+            "AllowedValues": [
+                "YES",
+                "NO"
+            ],
+            "ConstraintDescription": "Must specify YES or NO."
+        },
+        "Route1": {
+            "Description": "Enter valid VPC CIDR, bydefault CoreServices VPC CIDR (required only if you choose 'YES' for configure routes paramater).",
+            "Type": "String",
+            "Default": "10.94.0.0/22",
+            "AllowedPattern": ".+"
+        },
+        "Route2": {
+            "Description": "Enter valid VPC CIDR, bydefault CoreTools VPC CIDR (optional if you choose '1' on number of VPC peering section).",
+            "Type": "String",
+            "Default": "10.94.224.0/22"
+        }
+    },
+    "Conditions": {
+        "HasExportVPCId": {
+            "Fn::Equals": [
+                {
+                    "Ref": "ExportVPCId"
+                },
+                "YES"
+            ]
+        },
+        "ToCreateNewVpcPeering": {
+            "Fn::Equals": [
+                {
+                    "Ref": "CreateVpcPeering"
+                },
+                "YES"
+            ]
+        },
+        "TotalVpcPeeringConnections": {
+            "Fn::Equals": [
+                {
+                    "Ref": "NumberOfVpcPeering"
+                },
+                "2"
+            ]
+        },
+        "ToConfigureRoutes": {
+            "Fn::Equals": [
+                {
+                    "Ref": "ConfigureRoutes"
+                },
+                "YES"
+            ]
+        },
+        "BothCreateAndTotalVpcPeeringConnectionTrue": {
+            "Fn::And": [
+                {
+                    "Condition": "ToCreateNewVpcPeering"
+                },
+                {
+                    "Condition": "TotalVpcPeeringConnections"
+                }
+            ]
+        },
+        "BothConfigureRoutesAndTotalVpcPeeringConnectionTrue": {
+            "Fn::And": [
+                {
+                    "Condition": "ToConfigureRoutes"
+                },
+                {
+                    "Condition": "TotalVpcPeeringConnections"
+                }
+            ]
+        }
+    },
+    "Resources": {
+        "VPCPeeringConnection1": {
+            "Condition": "ToCreateNewVpcPeering",
+            "Type": "AWS::EC2::VPCPeeringConnection",
+            "Properties": {
+                "PeerVpcId": {
+                    "Ref": "PeerVpcId1"
+                },
+                "Tags": [
+                    {
+                        "Key": "Name",
+                        "Value": {
+                            "Fn::Join": [
+                                "-",
+                                [
+                                    {
+                                        "Ref": "VPCName"
+                                    },
+                                    {
+                                        "Ref": "PeerVpcName1"
+                                    }
+                                ]
+                            ]
+                        }
+                    }
+                ],
+                "VpcId": {
+                    "Fn::If": [
+                        "HasExportVPCId",
+                        {
+                            "Fn::ImportValue": {
+                                "Fn::Sub": "${VPCName}-VpcId"
+                            }
+                        },
+                        {
+                            "Ref": "VPCid"
+                        }
+                    ]
+                },
+                "PeerOwnerId": {
+                    "Ref": "VpcPeerConnection1AccountId"
+                },
+                "PeerRoleArn": {
+                    "Fn::Sub": "arn:aws:iam::${VpcPeerConnection1AccountId}:role/${peerRoleName}"
+                }
+            }
+        },
+        "VPCPeeringConnection2": {
+            "DependsOn": [
+                "VPCPeeringConnection1"
+            ],
+            "Condition": "BothCreateAndTotalVpcPeeringConnectionTrue",
+            "Type": "AWS::EC2::VPCPeeringConnection",
+            "Properties": {
+                "PeerVpcId": {
+                    "Ref": "PeerVpcId2"
+                },
+                "Tags": [
+                    {
+                        "Key": "Name",
+                        "Value": {
+                            "Fn::Join": [
+                                "-",
+                                [
+                                    {
+                                        "Ref": "VPCName"
+                                    },
+                                    {
+                                        "Ref": "PeerVpcName2"
+                                    }
+                                ]
+                            ]
+                        }
+                    }
+                ],
+                "VpcId": {
+                    "Fn::If": [
+                        "HasExportVPCId",
+                        {
+                            "Fn::ImportValue": {
+                                "Fn::Sub": "${VPCName}-VpcId"
+                            }
+                        },
+                        {
+                            "Ref": "VPCid"
+                        }
+                    ]
+                },
+                "PeerOwnerId": {
+                    "Ref": "VpcPeerConnection2AccountId"
+                },
+                "PeerRoleArn": {
+                    "Fn::Sub": "arn:aws:iam::${VpcPeerConnection2AccountId}:role/${peerRoleName}"
+                }
+            }
+        },
+        "PrivateRoute1ViaVPCPeeringConnection1": {
+            "DependsOn": [
+                "VPCPeeringConnection1"
+            ],
+            "Condition": "ToConfigureRoutes",
+            "Properties": {
+                "DestinationCidrBlock": {
+                    "Ref": "Route1"
+                },
+                "VpcPeeringConnectionId": {
+                    "Ref": "VPCPeeringConnection1"
+                },
+                "RouteTableId": {
+                    "Fn::ImportValue": {
+                        "Fn::Sub": "${VPCName}-PrivateRoute1"
+                    }
+                }
+            },
+            "Type": "AWS::EC2::Route"
+        },
+        "PrivateRoute2ViaVPCPeeringConnection1": {
+            "DependsOn": [
+                "VPCPeeringConnection1"
+            ],
+            "Condition": "ToConfigureRoutes",
+            "Properties": {
+                "DestinationCidrBlock": {
+                    "Ref": "Route1"
+                },
+                "VpcPeeringConnectionId": {
+                    "Ref": "VPCPeeringConnection1"
+                },
+                "RouteTableId": {
+                    "Fn::ImportValue": {
+                        "Fn::Sub": "${VPCName}-PrivateRoute2"
+                    }
+                }
+            },
+            "Type": "AWS::EC2::Route"
+        },
+        "PrivateRoute3ViaVPCPeeringConnection1": {
+            "DependsOn": [
+                "VPCPeeringConnection1"
+            ],
+            "Condition": "ToConfigureRoutes",
+            "Properties": {
+                "DestinationCidrBlock": {
+                    "Ref": "Route1"
+                },
+                "VpcPeeringConnectionId": {
+                    "Ref": "VPCPeeringConnection1"
+                },
+                "RouteTableId": {
+                    "Fn::ImportValue": {
+                        "Fn::Sub": "${VPCName}-PrivateRoute3"
+                    }
+                }
+            },
+            "Type": "AWS::EC2::Route"
+        },
+        "PrivateRoute1ViaVPCPeeringConnection2": {
+            "DependsOn": [
+                "VPCPeeringConnection1",
+                "VPCPeeringConnection2"
+            ],
+            "Condition": "BothConfigureRoutesAndTotalVpcPeeringConnectionTrue",
+            "Properties": {
+                "DestinationCidrBlock": {
+                    "Ref": "Route2"
+                },
+                "VpcPeeringConnectionId": {
+                    "Ref": "VPCPeeringConnection2"
+                },
+                "RouteTableId": {
+                    "Fn::ImportValue": {
+                        "Fn::Sub": "${VPCName}-PrivateRoute1"
+                    }
+                }
+            },
+            "Type": "AWS::EC2::Route"
+        },
+        "PrivateRoute2ViaVPCPeeringConnection2": {
+            "DependsOn": [
+                "VPCPeeringConnection1",
+                "VPCPeeringConnection2"
+            ],
+            "Condition": "BothConfigureRoutesAndTotalVpcPeeringConnectionTrue",
+            "Properties": {
+                "DestinationCidrBlock": {
+                    "Ref": "Route2"
+                },
+                "VpcPeeringConnectionId": {
+                    "Ref": "VPCPeeringConnection2"
+                },
+                "RouteTableId": {
+                    "Fn::ImportValue": {
+                        "Fn::Sub": "${VPCName}-PrivateRoute2"
+                    }
+                }
+            },
+            "Type": "AWS::EC2::Route"
+        },
+        "PrivateRoute3ViaVPCPeeringConnection2": {
+            "DependsOn": [
+                "VPCPeeringConnection1",
+                "VPCPeeringConnection2"
+            ],
+            "Condition": "BothConfigureRoutesAndTotalVpcPeeringConnectionTrue",
+            "Properties": {
+                "DestinationCidrBlock": {
+                    "Ref": "Route2"
+                },
+                "VpcPeeringConnectionId": {
+                    "Ref": "VPCPeeringConnection2"
+                },
+                "RouteTableId": {
+                    "Fn::ImportValue": {
+                        "Fn::Sub": "${VPCName}-PrivateRoute3"
+                    }
+                }
+            },
+            "Type": "AWS::EC2::Route"
+        }
+    },
+    "Outputs": {
+        "VpcPeeringConnectionId1": {
+            "Condition": "ToCreateNewVpcPeering",
+            "Value": {
+                "Ref": "VPCPeeringConnection1"
+            }
+        },
+        "VpcPeeringConnectionId2": {
+            "Condition": "BothCreateAndTotalVpcPeeringConnectionTrue",
+            "Value": {
+                "Ref": "VPCPeeringConnection2"
+            }
+        }
+    }
+}
