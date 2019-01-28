@@ -1,6 +1,6 @@
 {
     "AWSTemplateFormatVersion": "2010-09-09",
-    "Description": "WEX Inc., AWS CloudFormation Template Configure the VPC peering between CoreServices Prod and CoreTools Prod VPC's by default.",
+    "Description": "GENIUS PLAZA., AWS CloudFormation Template Configure the VPC peering between CoreServices Prod and CoreTools Prod VPC's by default.",
     "Metadata": {
         "AWS::CloudFormation::Interface": {
             "ParameterGroups": [
